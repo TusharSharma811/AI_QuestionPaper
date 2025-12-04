@@ -1,49 +1,102 @@
 const Question = require('../models/Question');
+const axios = require('axios');
 
-// Helper function to get random questions from a specific unit and type
-const getRandomQuestions = async (unit, type, count) => {
-  // MongoDB Aggregation Pipeline for Random Selection
-  const questions = await Question.aggregate([
+// Helper: Call Python AI Service
+const paraphraseQuestion = async (text) => {
+  try {
+    const response = await axios.post('http://localhost:5001/paraphrase', {
+      text: text
+    });
+    return response.data.paraphrased;
+  } catch (error) {
+    console.error("AI Service Error (Skipping paraphrase):", error.message);
+    return text; // Fallback: Return original if AI fails
+  }
+};
+
+// --- SMART ALGORITHM: Least Used First ---
+const getSmartQuestions = async (unit, type, count) => {
+  // 1. Find ALL questions matching criteria
+  const candidates = await Question.find({ 
+    unit: unit, 
+    question_type: type 
+  })
+  .sort({ usage_count: 1, last_used_date: 1 }) // Primary Sort: Least used. Secondary: Oldest usage.
+  .limit(count + 5); // Fetch a few extras to add a tiny bit of randomness among the best candidates
+
+  if (candidates.length < count) {
+    console.warn(`Not enough questions for Unit ${unit} Type ${type}. Needed ${count}, found ${candidates.length}`);
+    return candidates; // Return what we have
+  }
+
+  // 2. Shuffle the top candidates slightly so it's not PREDICTABLE
+  const shuffled = candidates.sort(() => 0.5 - Math.random());
+  
+  // 3. Pick the required number
+  return shuffled.slice(0, count);
+};
+
+// --- MARK AS USED ---
+const markQuestionsAsUsed = async (questionIds) => {
+  await Question.updateMany(
+    { _id: { $in: questionIds } },
     { 
-      $match: { 
-        unit: unit, 
-        question_type: type 
-      } 
-    },
-    { $sample: { size: count } } // Randomly selects 'count' documents
-  ]);
-  return questions;
+      $inc: { usage_count: 1 }, // Increment usage counter
+      $set: { last_used_date: new Date() } // Update timestamp
+    }
+  );
 };
 
 const generatePaper = async (req, res) => {
   try {
-    const { subject } = req.body; // e.g., "Software Engineering"
+    const { subject } = req.body;
 
-    // We need to build the paper structure unit by unit to ensure coverage
     const paperStructure = {
-      sectionA: [], // 2 marks, 10 questions (2 per unit)
-      sectionB: [], // 10 marks, 5 questions (1 per unit)
-      sectionC: []  // 10 marks, 10 questions (2 per unit for internal choice)
+      sectionA: [],
+      sectionB: [],
+      sectionC: []
     };
+
+    // Keep track of ALL selected IDs to update them later
+    let allSelectedIds = [];
 
     // Loop through all 5 units
     for (let unit = 1; unit <= 5; unit++) {
       
-      // 1. Fetch Section A questions (2 Brief questions per unit)
-      const secA_questions = await getRandomQuestions(unit, 'BRIEF', 2);
-      paperStructure.sectionA.push(...secA_questions);
+      // 1. Section A (2 Brief questions)
+      const secA = await getSmartQuestions(unit, 'BRIEF', 2);
+      paperStructure.sectionA.push(...secA);
+      allSelectedIds.push(...secA.map(q => q._id));
 
-      // 2. Fetch Section B questions (1 Long question per unit)
-      const secB_questions = await getRandomQuestions(unit, 'LONG_ANSWER', 1);
-      paperStructure.sectionB.push(...secB_questions);
+      // 2. Section B (1 Long question)
+      let secB = await getSmartQuestions(unit, 'LONG_ANSWER', 1);
 
-      // 3. Fetch Section C questions (2 Long questions per unit for internal choice)
-      const secC_questions = await getRandomQuestions(unit, 'LONG_ANSWER', 2);
-      paperStructure.sectionC.push({
-        unit: unit,
-        questions: secC_questions // Stores them as a pair [a, b]
-      });
+// Paraphrase them!
+const secB_AI = await Promise.all(secB.map(async (q) => {
+    const newText = await paraphraseQuestion(q.question_text);
+    return { ...q.toObject(), question_text: newText, is_ai_generated: true };
+}));
+
+paperStructure.sectionB.push(...secB_AI);
+allSelectedIds.push(...secB.map(q => q._id));
+
+      // 3. Section C (2 Long questions)
+      let secC = await getSmartQuestions(unit, 'LONG_ANSWER', 2);
+
+const secC_AI = await Promise.all(secC.map(async (q) => {
+    const newText = await paraphraseQuestion(q.question_text);
+    return { ...q.toObject(), question_text: newText, is_ai_generated: true };
+}));
+
+paperStructure.sectionC.push({
+  unit: unit,
+  questions: secC_AI
+});
+allSelectedIds.push(...secC.map(q => q._id));
     }
+
+    // CRITICAL: Update database stats
+    await markQuestionsAsUsed(allSelectedIds);
 
     res.json({
       success: true,
