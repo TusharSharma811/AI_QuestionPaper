@@ -7,7 +7,11 @@ const paraphraseQuestion = async (text) => {
     const response = await axios.post('http://localhost:5001/paraphrase', {
       text: text
     });
-    return response.data.paraphrased;
+    // Check if the modified flag is true, else return original
+    if (response.data.modified) {
+        return response.data.paraphrased;
+    }
+    return text;
   } catch (error) {
     console.error("AI Service Error (Skipping paraphrase):", error.message);
     return text; // Fallback: Return original if AI fails
@@ -15,24 +19,27 @@ const paraphraseQuestion = async (text) => {
 };
 
 // --- SMART ALGORITHM: Least Used First ---
-const getSmartQuestions = async (unit, type, count) => {
-  // 1. Find ALL questions matching criteria
+// FIXED: Added 'subject' parameter here
+const getSmartQuestions = async (subject, unit, type, count) => {
+  
+  // 1. Find questions matching Subject + Unit + Type
   const candidates = await Question.find({ 
+    subject: subject, // <--- THIS WAS MISSING!
     unit: unit, 
     question_type: type 
   })
-  .sort({ usage_count: 1, last_used_date: 1 }) // Primary Sort: Least used. Secondary: Oldest usage.
-  .limit(count + 5); // Fetch a few extras to add a tiny bit of randomness among the best candidates
+  .sort({ usage_count: 1, last_used_date: 1 }) 
+  .limit(count + 5); 
 
   if (candidates.length < count) {
-    console.warn(`Not enough questions for Unit ${unit} Type ${type}. Needed ${count}, found ${candidates.length}`);
-    return candidates; // Return what we have
+    console.warn(`Not enough questions for ${subject} Unit ${unit} Type ${type}. Needed ${count}, found ${candidates.length}`);
+    return candidates; 
   }
 
-  // 2. Shuffle the top candidates slightly so it's not PREDICTABLE
+  // 2. Shuffle slightly
   const shuffled = candidates.sort(() => 0.5 - Math.random());
   
-  // 3. Pick the required number
+  // 3. Pick required number
   return shuffled.slice(0, count);
 };
 
@@ -41,8 +48,8 @@ const markQuestionsAsUsed = async (questionIds) => {
   await Question.updateMany(
     { _id: { $in: questionIds } },
     { 
-      $inc: { usage_count: 1 }, // Increment usage counter
-      $set: { last_used_date: new Date() } // Update timestamp
+      $inc: { usage_count: 1 }, 
+      $set: { last_used_date: new Date() } 
     }
   );
 };
@@ -57,45 +64,45 @@ const generatePaper = async (req, res) => {
       sectionC: []
     };
 
-    // Keep track of ALL selected IDs to update them later
     let allSelectedIds = [];
 
     // Loop through all 5 units
     for (let unit = 1; unit <= 5; unit++) {
       
-      // 1. Section A (2 Brief questions)
-      const secA = await getSmartQuestions(unit, 'BRIEF', 2);
+      // FIXED: Passed 'subject' into every function call below
+
+      // 1. Section A (Brief)
+      const secA = await getSmartQuestions(subject, unit, 'BRIEF', 2);
       paperStructure.sectionA.push(...secA);
       allSelectedIds.push(...secA.map(q => q._id));
 
-      // 2. Section B (1 Long question)
-      let secB = await getSmartQuestions(unit, 'LONG_ANSWER', 1);
+      // 2. Section B (Long) - With AI
+      let secB = await getSmartQuestions(subject, unit, 'LONG_ANSWER', 1);
+      
+      const secB_AI = await Promise.all(secB.map(async (q) => {
+          const newText = await paraphraseQuestion(q.question_text);
+          return { ...q.toObject(), question_text: newText, is_ai_generated: true };
+      }));
 
-// Paraphrase them!
-const secB_AI = await Promise.all(secB.map(async (q) => {
-    const newText = await paraphraseQuestion(q.question_text);
-    return { ...q.toObject(), question_text: newText, is_ai_generated: true };
-}));
+      paperStructure.sectionB.push(...secB_AI);
+      allSelectedIds.push(...secB.map(q => q._id));
 
-paperStructure.sectionB.push(...secB_AI);
-allSelectedIds.push(...secB.map(q => q._id));
+      // 3. Section C (Long) - With AI
+      let secC = await getSmartQuestions(subject, unit, 'LONG_ANSWER', 2);
 
-      // 3. Section C (2 Long questions)
-      let secC = await getSmartQuestions(unit, 'LONG_ANSWER', 2);
+      const secC_AI = await Promise.all(secC.map(async (q) => {
+          const newText = await paraphraseQuestion(q.question_text);
+          return { ...q.toObject(), question_text: newText, is_ai_generated: true };
+      }));
 
-const secC_AI = await Promise.all(secC.map(async (q) => {
-    const newText = await paraphraseQuestion(q.question_text);
-    return { ...q.toObject(), question_text: newText, is_ai_generated: true };
-}));
-
-paperStructure.sectionC.push({
-  unit: unit,
-  questions: secC_AI
-});
-allSelectedIds.push(...secC.map(q => q._id));
+      paperStructure.sectionC.push({
+        unit: unit,
+        questions: secC_AI
+      });
+      allSelectedIds.push(...secC.map(q => q._id));
     }
 
-    // CRITICAL: Update database stats
+    // Update stats
     await markQuestionsAsUsed(allSelectedIds);
 
     res.json({

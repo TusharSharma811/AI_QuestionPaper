@@ -8,6 +8,7 @@ import './index.css';
 function App() {
   const [questions, setQuestions] = useState([]);
   const [generatedPaper, setGeneratedPaper] = useState(null);
+  const [selectedSubject, setSelectedSubject] = useState('Software Engineering');
 
   // Function to fetch questions from backend
   const fetchQuestions = async () => {
@@ -28,7 +29,7 @@ function App() {
   const handleGenerate = async () => {
     try {
       const response = await axios.post('http://localhost:5000/api/paper/generate', {
-        subject: 'Software Engineering'
+        subject: selectedSubject
       });
       setGeneratedPaper(response.data);
     } catch (error) {
@@ -65,6 +66,22 @@ function App() {
     <div className="app-container">
       <header>
         <h1>AI Question Paper Generator</h1>
+
+        {/* Subject Selector Dropdown */}
+        <div style={{ margin: '10px 0' }}>
+    <label style={{ fontWeight: 'bold', marginRight: '10px' }}>Select Subject:</label>
+    <select 
+      value={selectedSubject} 
+      onChange={(e) => setSelectedSubject(e.target.value)}
+      style={{ padding: '8px', fontSize: '16px', borderRadius: '5px' }}
+    >
+      <option value="Software Engineering">Software Engineering</option>
+      <option value="DBMS">DBMS</option>
+      <option value="Computer Networks">Computer Networks</option>
+      {/* Add more subjects as needed */}
+    </select>
+  </div>
+
         <button className="generate-btn" onClick={handleGenerate}>
           ⚡ Generate Paper Now
         </button>
