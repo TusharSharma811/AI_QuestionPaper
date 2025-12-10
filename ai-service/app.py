@@ -4,7 +4,7 @@ import torch
 
 app = Flask(__name__)
 
-# --- CONFIGURATION ---
+
 MODEL_NAME = "Vamsi/T5_Paraphrase_Paws"
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
